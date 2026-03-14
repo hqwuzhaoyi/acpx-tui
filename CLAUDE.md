@@ -30,6 +30,13 @@ src/
 
 `claude --resume <session_id>` resolves sessions by project directory. Claude Code stores sessions under `~/.claude/projects/<encoded-cwd>/`. If you run `claude --resume` from a different directory than the session's original `cwd`, it fails with "No conversation found". Fix: `chdir` to `session.cwd` before `exec`.
 
+### Agent resume command formats differ
+
+- **Claude Code:** `claude --resume <session_id>` (flag)
+- **Codex CLI:** `codex resume <session_id>` (subcommand)
+
+Each agent has its own CLI convention. When adding new agents, check their `--help` for the correct resume syntax.
+
 ### ACP event format (real data)
 
 - `usage_update` has `used` and `size` fields (NOT `cost.amount`)
