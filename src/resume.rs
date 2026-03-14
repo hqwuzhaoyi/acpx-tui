@@ -27,7 +27,7 @@ pub fn build_resume_command(session: &Session) -> Result<(String, Vec<String>), 
         )),
         "codex" => Ok((
             "codex".to_string(),
-            vec!["--resume".to_string(), session.acp_session_id.clone()],
+            vec!["resume".to_string(), session.acp_session_id.clone()],
         )),
         other => Err(ResumeError::UnsupportedAgent(other.to_string())),
     }
@@ -81,7 +81,7 @@ mod tests {
         let session = make_session("codex", "def-456");
         let (prog, args) = build_resume_command(&session).unwrap();
         assert_eq!(prog, "codex");
-        assert_eq!(args, vec!["--resume", "def-456"]);
+        assert_eq!(args, vec!["resume", "def-456"]);
     }
 
     #[test]
