@@ -34,9 +34,15 @@ pub fn build_resume_command(session: &Session) -> Result<(String, Vec<String>), 
 }
 
 /// Exec into the agent TUI, replacing the current process.
+/// Changes to the session's cwd first, since agents look up sessions by project directory.
 /// This function does not return on success.
 pub fn exec_resume(session: &Session) -> Result<(), ResumeError> {
     let (program, args) = build_resume_command(session)?;
+
+    // Agent CLIs resolve sessions by cwd, so we must chdir to the session's project directory
+    if let Err(e) = std::env::set_current_dir(&session.cwd) {
+        eprintln!("Warning: failed to chdir to {}: {}", session.cwd, e);
+    }
 
     let err = Command::new(&program).args(&args).exec();
 
