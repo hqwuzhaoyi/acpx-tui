@@ -1,6 +1,5 @@
 use crate::events::{self, DisplayEvent};
 use crate::sessions::{self, Session};
-use std::path::Path;
 
 pub struct App {
     pub sessions: Vec<Session>,
@@ -27,7 +26,8 @@ impl App {
     }
 
     /// Create App with a custom sessions directory (for testing)
-    pub fn with_sessions_dir(dir: &Path) -> Self {
+    #[cfg(test)]
+    pub fn with_sessions_dir(dir: &std::path::Path) -> Self {
         let sessions = sessions::load_sessions_from(dir);
         let events = sessions.first().map(load_events_for).unwrap_or_default();
 
