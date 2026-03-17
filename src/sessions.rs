@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::agents;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -77,21 +78,23 @@ pub struct Session {
 /// "npx -y @zed-industries/claude-agent-acp@^0.21.0" -> "claude"
 /// "npx @zed-industries/codex-acp@^0.9.5" -> "codex"
 pub fn parse_agent_type(agent_command: &str) -> String {
-    if agent_command.contains("claude") {
-        "claude".to_string()
-    } else if agent_command.contains("codex") {
-        "codex".to_string()
-    } else if agent_command.contains("gemini") {
-        "gemini".to_string()
-    } else if agent_command.contains("openclaw") {
-        "openclaw".to_string()
-    } else {
-        agent_command
-            .split_whitespace()
-            .last()
-            .unwrap_or("unknown")
-            .to_string()
+    let cmd_lower = agent_command.to_lowercase();
+    // Check all registered agents (ordering in AGENTS matters for substring safety)
+    for agent in agents::AGENTS {
+        if cmd_lower.contains(agent.name) {
+            return agent.name.to_string();
+        }
     }
+    // Handle trae aliases (trae-cli, trae-agent) that contain "trae"
+    if cmd_lower.contains("trae") {
+        return "trae".to_string();
+    }
+    // Fallback: last token of the command
+    agent_command
+        .split_whitespace()
+        .last()
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 /// Check if pid is alive
@@ -346,5 +349,70 @@ mod tests {
         assert_eq!(SessionStatus::Running.to_string(), "running");
         assert_eq!(SessionStatus::Exited.to_string(), "exited");
         assert_eq!(SessionStatus::Closed.to_string(), "closed");
+    }
+
+    #[test]
+    fn test_parse_agent_type_trae_cli() {
+        assert_eq!(parse_agent_type("trae-cli acp serve"), "trae");
+    }
+
+    #[test]
+    fn test_parse_agent_type_trae_agent_alias() {
+        assert_eq!(parse_agent_type("trae-agent --resume abc"), "trae");
+    }
+
+    #[test]
+    fn test_parse_agent_type_gemini() {
+        assert_eq!(parse_agent_type("gemini --acp"), "gemini");
+    }
+
+    #[test]
+    fn test_parse_agent_type_cursor() {
+        assert_eq!(parse_agent_type("cursor-agent acp"), "cursor");
+    }
+
+    #[test]
+    fn test_parse_agent_type_copilot() {
+        assert_eq!(parse_agent_type("copilot --acp --stdio"), "copilot");
+    }
+
+    #[test]
+    fn test_parse_agent_type_kimi() {
+        assert_eq!(parse_agent_type("kimi acp"), "kimi");
+    }
+
+    #[test]
+    fn test_parse_agent_type_kiro() {
+        assert_eq!(parse_agent_type("kiro-cli acp"), "kiro");
+    }
+
+    #[test]
+    fn test_parse_agent_type_qwen() {
+        assert_eq!(parse_agent_type("qwen --acp"), "qwen");
+    }
+
+    #[test]
+    fn test_parse_agent_type_droid() {
+        assert_eq!(parse_agent_type("droid exec --output-format acp"), "droid");
+    }
+
+    #[test]
+    fn test_parse_agent_type_iflow() {
+        assert_eq!(parse_agent_type("iflow --experimental-acp"), "iflow");
+    }
+
+    #[test]
+    fn test_parse_agent_type_kilocode() {
+        assert_eq!(parse_agent_type("npx -y @kilocode/cli acp"), "kilocode");
+    }
+
+    #[test]
+    fn test_parse_agent_type_opencode() {
+        assert_eq!(parse_agent_type("npx -y opencode-ai acp"), "opencode");
+    }
+
+    #[test]
+    fn test_parse_agent_type_pi() {
+        assert_eq!(parse_agent_type("npx pi-acp"), "pi");
     }
 }
