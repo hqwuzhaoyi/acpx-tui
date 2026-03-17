@@ -1,3 +1,4 @@
+use crate::agents::{self, ResumePattern};
 use crate::sessions::Session;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -17,19 +18,16 @@ impl std::fmt::Display for ResumeError {
     }
 }
 
-/// Build the resume command for a session.
-/// Returns (program, args) or error.
+/// Build the resume command for a session by looking up the Agent Registry.
+/// Returns (program, args) or error if agent doesn't support resume.
 pub fn build_resume_command(session: &Session) -> Result<(String, Vec<String>), ResumeError> {
-    match session.agent_type.as_str() {
-        "claude" => Ok((
-            "claude".to_string(),
-            vec!["--resume".to_string(), session.acp_session_id.clone()],
+    let info = agents::lookup(&session.agent_type);
+    match info.map(|i| &i.resume) {
+        Some(ResumePattern::CliFlag { binary, flag }) => Ok((
+            binary.to_string(),
+            vec![flag.to_string(), session.acp_session_id.clone()],
         )),
-        "codex" => Ok((
-            "codex".to_string(),
-            vec!["resume".to_string(), session.acp_session_id.clone()],
-        )),
-        other => Err(ResumeError::UnsupportedAgent(other.to_string())),
+        _ => Err(ResumeError::UnsupportedAgent(session.agent_type.clone())),
     }
 }
 
@@ -94,5 +92,29 @@ mod tests {
             format!("{}", err),
             "Resume not supported for agent: unknown-agent"
         );
+    }
+
+    #[test]
+    fn test_build_resume_command_trae() {
+        let session = make_session("trae", "trae-sess-1");
+        let (prog, args) = build_resume_command(&session).unwrap();
+        assert_eq!(prog, "trae-cli");
+        assert_eq!(args, vec!["--resume", "trae-sess-1"]);
+    }
+
+    #[test]
+    fn test_build_resume_command_gemini_unsupported() {
+        let session = make_session("gemini", "gem-1");
+        let result = build_resume_command(&session);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_resume_command_all_registered_unsupported() {
+        // All unsupported agents should return UnsupportedAgent error
+        for name in ["pi", "openclaw", "gemini", "cursor", "copilot", "droid", "iflow", "kilocode", "kimi", "kiro", "opencode", "qwen"] {
+            let session = make_session(name, "sess-x");
+            assert!(build_resume_command(&session).is_err(), "{} should be unsupported", name);
+        }
     }
 }
