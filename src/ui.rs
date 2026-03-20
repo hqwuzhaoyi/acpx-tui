@@ -1,3 +1,4 @@
+use crate::agents;
 use crate::app::App;
 use crate::sessions::SessionStatus;
 use ratatui::{
@@ -60,12 +61,21 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Gray)
             };
 
+            let agent_info = agents::lookup(&s.agent_type);
+            let agent_color = agent_info
+                .map(|a| a.display_color)
+                .unwrap_or(Color::DarkGray);
+
             let line = Line::from(vec![
                 Span::styled(
                     format!("{} ", status_icon),
                     Style::default().fg(status_color),
                 ),
-                Span::styled(format!("{:<8}", s.agent_type), style),
+                Span::styled(
+                    format!("[{}]", s.agent_type),
+                    Style::default().fg(agent_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
                 Span::styled(cwd_short, style),
             ]);
             let detail = Line::from(vec![
@@ -248,7 +258,7 @@ mod tests {
     #[test]
     fn test_format_age_recent() {
         // Use a timestamp from right now
-        let now = std::time::SystemTime::now()
+        let _now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
@@ -256,5 +266,19 @@ mod tests {
         // doesn't panic on various inputs
         let age = format_age("2020-01-01T00:00:00Z");
         assert!(age.contains("d ago")); // Should be many days ago
+    }
+
+    #[test]
+    fn test_agent_color_lookup() {
+        use crate::agents;
+
+        let claude = agents::lookup("claude").unwrap();
+        assert_eq!(claude.display_color, Color::Magenta);
+
+        let trae = agents::lookup("trae").unwrap();
+        assert_eq!(trae.display_color, Color::LightCyan);
+
+        let codex = agents::lookup("codex").unwrap();
+        assert_eq!(codex.display_color, Color::Cyan);
     }
 }
