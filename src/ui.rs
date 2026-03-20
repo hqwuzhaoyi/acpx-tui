@@ -22,7 +22,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_sessions(f, app, main_chunks[0]);
     draw_events(f, app, main_chunks[1]);
-    draw_status_bar(f, chunks[1]);
+    draw_status_bar(f, app, chunks[1]);
 }
 
 fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
@@ -136,7 +136,18 @@ fn draw_events(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_status_bar(f: &mut Frame, area: Rect) {
+fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    if let Some(ref msg) = app.status_message {
+        let bar = Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {} ", msg),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        f.render_widget(bar, area);
+        return;
+    }
+
     let bar = Paragraph::new(Line::from(vec![
         Span::styled(" [Enter]", Style::default().fg(Color::Cyan)),
         Span::raw(" Resume  "),

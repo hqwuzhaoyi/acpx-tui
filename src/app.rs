@@ -7,6 +7,7 @@ pub struct App {
     pub events: Vec<DisplayEvent>,
     pub should_quit: bool,
     pub show_details: bool,
+    pub status_message: Option<String>,
     sessions_dir: Option<std::path::PathBuf>,
 }
 
@@ -21,6 +22,7 @@ impl App {
             events,
             should_quit: false,
             show_details: false,
+            status_message: None,
             sessions_dir: None,
         }
     }
@@ -37,6 +39,7 @@ impl App {
             events,
             should_quit: false,
             show_details: false,
+            status_message: None,
             sessions_dir: Some(dir.to_path_buf()),
         }
     }
@@ -73,6 +76,14 @@ impl App {
 
     pub fn toggle_details(&mut self) {
         self.show_details = !self.show_details;
+    }
+
+    pub fn set_status_message(&mut self, msg: String) {
+        self.status_message = Some(msg);
+    }
+
+    pub fn clear_status_message(&mut self) {
+        self.status_message = None;
     }
 
     fn reload_events(&mut self) {
@@ -264,5 +275,17 @@ mod tests {
         app.refresh();
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.selected, 0); // Clamped from 2 to 0
+    }
+
+    #[test]
+    fn test_status_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::with_sessions_dir(dir.path());
+
+        assert!(app.status_message.is_none());
+        app.set_status_message("test message".to_string());
+        assert_eq!(app.status_message.as_deref(), Some("test message"));
+        app.clear_status_message();
+        assert!(app.status_message.is_none());
     }
 }

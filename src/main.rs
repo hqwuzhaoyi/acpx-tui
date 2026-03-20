@@ -33,6 +33,8 @@ fn main() -> io::Result<()> {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                // Clear status message on any key press
+                app.clear_status_message();
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         app.should_quit = true;
@@ -43,19 +45,29 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('d') => app.toggle_details(),
                     KeyCode::Enter => {
                         if let Some(session) = app.selected_session().cloned() {
-                            // Cleanup terminal before exec
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                            terminal.show_cursor()?;
+                            let info = agents::lookup(&session.agent_type);
+                            let can_resume = info
+                                .map(|i| matches!(i.resume, agents::ResumePattern::CliFlag { .. }))
+                                .unwrap_or(false);
 
-                            match resume::exec_resume(&session) {
-                                Err(e) => {
-                                    eprintln!("{}", e);
-                                    // Re-enter TUI on error
-                                    enable_raw_mode()?;
-                                    execute!(io::stdout(), EnterAlternateScreen)?;
+                            if can_resume {
+                                // Cleanup terminal before exec
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                terminal.show_cursor()?;
+
+                                match resume::exec_resume(&session) {
+                                    Err(e) => {
+                                        eprintln!("{}", e);
+                                        enable_raw_mode()?;
+                                        execute!(io::stdout(), EnterAlternateScreen)?;
+                                    }
+                                    Ok(_) => unreachable!(),
                                 }
-                                Ok(_) => unreachable!(),
+                            } else {
+                                app.set_status_message(
+                                    format!("{} does not support resume yet", session.agent_type),
+                                );
                             }
                         }
                     }
