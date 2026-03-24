@@ -1,5 +1,5 @@
 use crate::agents;
-use crate::app::App;
+use crate::app::{App, Panel};
 use crate::sessions::SessionStatus;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -25,7 +25,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_status_bar(f, app, chunks[1]);
 }
 
-fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
+fn draw_sessions(f: &mut Frame, app: &mut App, area: Rect) {
     if app.sessions.is_empty() {
         let msg = Paragraph::new("No acpx sessions found.\n\nStart one with: acpx claude \"your prompt\"")
             .block(Block::default().borders(Borders::ALL).title(" Sessions "))
@@ -90,13 +90,20 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Sessions "),
-    );
+    let sessions_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Sessions ")
+        .border_style(if app.focused_panel == Panel::Sessions {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
 
-    f.render_widget(list, area);
+    let list = List::new(items)
+        .block(sessions_block)
+        .highlight_symbol("▶ ");
+
+    f.render_stateful_widget(list, area, &mut app.list_state);
 }
 
 fn draw_events(f: &mut Frame, app: &App, area: Rect) {
@@ -129,9 +136,19 @@ fn draw_events(f: &mut Frame, app: &App, area: Rect) {
         " Events ".to_string()
     };
 
+    let events_block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(if app.focused_panel == Panel::Events {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: true });
+        .block(events_block)
+        .wrap(Wrap { trim: true })
+        .scroll((app.event_scroll, 0));
 
     f.render_widget(paragraph, area);
 }
@@ -151,6 +168,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let bar = Paragraph::new(Line::from(vec![
         Span::styled(" [Enter]", Style::default().fg(Color::Cyan)),
         Span::raw(" Resume  "),
+        Span::styled("[Tab]", Style::default().fg(Color::Cyan)),
+        Span::raw(" Switch  "),
         Span::styled("[d]", Style::default().fg(Color::Cyan)),
         Span::raw(" Details  "),
         Span::styled("[r]", Style::default().fg(Color::Cyan)),

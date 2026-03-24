@@ -1,13 +1,23 @@
 use crate::events::{self, DisplayEvent};
 use crate::sessions::{self, Session};
+use ratatui::widgets::ListState;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    Sessions,
+    Events,
+}
 
 pub struct App {
     pub sessions: Vec<Session>,
     pub selected: usize,
+    pub list_state: ListState,
     pub events: Vec<DisplayEvent>,
     pub should_quit: bool,
     pub show_details: bool,
     pub status_message: Option<String>,
+    pub event_scroll: u16,
+    pub focused_panel: Panel,
     sessions_dir: Option<std::path::PathBuf>,
 }
 
@@ -15,14 +25,21 @@ impl App {
     pub fn new() -> Self {
         let sessions = sessions::load_sessions();
         let events = sessions.first().map(load_events_for).unwrap_or_default();
+        let mut list_state = ListState::default();
+        if !sessions.is_empty() {
+            list_state.select(Some(0));
+        }
 
         App {
             sessions,
             selected: 0,
+            list_state,
             events,
             should_quit: false,
             show_details: false,
             status_message: None,
+            event_scroll: 0,
+            focused_panel: Panel::Sessions,
             sessions_dir: None,
         }
     }
@@ -32,14 +49,21 @@ impl App {
     pub fn with_sessions_dir(dir: &std::path::Path) -> Self {
         let sessions = sessions::load_sessions_from(dir);
         let events = sessions.first().map(load_events_for).unwrap_or_default();
+        let mut list_state = ListState::default();
+        if !sessions.is_empty() {
+            list_state.select(Some(0));
+        }
 
         App {
             sessions,
             selected: 0,
+            list_state,
             events,
             should_quit: false,
             show_details: false,
             status_message: None,
+            event_scroll: 0,
+            focused_panel: Panel::Sessions,
             sessions_dir: Some(dir.to_path_buf()),
         }
     }
@@ -53,6 +77,11 @@ impl App {
         if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
             self.selected = self.sessions.len() - 1;
         }
+        self.list_state.select(if self.sessions.is_empty() {
+            None
+        } else {
+            Some(self.selected)
+        });
         self.reload_events();
     }
 
@@ -62,20 +91,42 @@ impl App {
 
     pub fn select_next(&mut self) {
         if !self.sessions.is_empty() {
-            self.selected = (self.selected + 1).min(self.sessions.len() - 1);
+            self.selected = (self.selected + 1) % self.sessions.len();
+            self.list_state.select(Some(self.selected));
             self.reload_events();
         }
     }
 
     pub fn select_prev(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
+        if !self.sessions.is_empty() {
+            self.selected = if self.selected == 0 {
+                self.sessions.len() - 1
+            } else {
+                self.selected - 1
+            };
+            self.list_state.select(Some(self.selected));
             self.reload_events();
         }
     }
 
     pub fn toggle_details(&mut self) {
         self.show_details = !self.show_details;
+        self.event_scroll = 0;
+    }
+
+    pub fn scroll_events_up(&mut self) {
+        self.event_scroll = self.event_scroll.saturating_sub(3);
+    }
+
+    pub fn scroll_events_down(&mut self) {
+        self.event_scroll = self.event_scroll.saturating_add(3);
+    }
+
+    pub fn toggle_panel(&mut self) {
+        self.focused_panel = match self.focused_panel {
+            Panel::Sessions => Panel::Events,
+            Panel::Events => Panel::Sessions,
+        };
     }
 
     pub fn set_status_message(&mut self, msg: String) {
@@ -91,6 +142,7 @@ impl App {
             .selected_session()
             .map(load_events_for)
             .unwrap_or_default();
+        self.event_scroll = 0;
     }
 }
 
@@ -192,9 +244,9 @@ mod tests {
         app.select_next();
         assert_eq!(app.selected, 2);
 
-        // Should not go beyond last
+        // Wraps to beginning
         app.select_next();
-        assert_eq!(app.selected, 2);
+        assert_eq!(app.selected, 0);
     }
 
     #[test]
@@ -202,14 +254,13 @@ mod tests {
         let dir = setup_test_sessions(3);
         let mut app = App::with_sessions_dir(dir.path());
 
-        app.selected = 2;
+        // Wraps to end
+        app.select_prev();
+        assert_eq!(app.selected, 2);
+
         app.select_prev();
         assert_eq!(app.selected, 1);
 
-        app.select_prev();
-        assert_eq!(app.selected, 0);
-
-        // Should not go below 0
         app.select_prev();
         assert_eq!(app.selected, 0);
     }
