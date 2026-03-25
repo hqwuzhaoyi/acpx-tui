@@ -32,10 +32,33 @@ src/
 
 ### Agent resume command formats differ
 
-- **Claude Code:** `claude --resume <session_id>` (flag)
-- **Codex CLI:** `codex resume <session_id>` (subcommand)
+- **Claude Code:** `claude --resume <session_id>` (flag + separate arg)
+- **Codex CLI:** `codex resume <session_id>` (subcommand + separate arg)
+- **Trae CLI:** `trae-cli --resume=<session_id>` (flag=value, MUST use `=`)
 
-Each agent has its own CLI convention. When adding new agents, check their `--help` for the correct resume syntax.
+Trae's `--resume` is `string[="AUTO"]` — without `=`, trae treats it as `--resume=AUTO` and the session ID becomes a prompt message. Use `CliFlagEq` pattern for agents with optional-value flags.
+
+### acpx session architecture
+
+acpx runs agents in ACP server mode (e.g. `trae-cli acp serve`) as background processes. Two independent session systems coexist:
+
+- **acpx sessions** (`~/.acpx/sessions/`): managed by acpx, events recorded in `.stream.ndjson`
+- **Agent-native sessions** (e.g. `~/Library/Caches/trae-cli/sessions/`): managed by the agent CLI itself
+
+`trae-cli --resume` uses trae's own session system and does NOT update acpx's stream files. `acpx trae --session <name>` goes through the ACP proxy and records events properly. Both paths are independent — using `trae-cli --resume` does not interrupt acpx's session.
+
+### Stream files may not exist
+
+Sessions with `last_seq: 0` have no `.stream.ndjson` file — the file is only created when events flow through the ACP proxy. Sessions where `acpxRecordId == acpSessionId` never completed ACP handshake.
+
+### Agent ACP capabilities vary
+
+- **Claude/Codex:** support `loadSession` — acpx can resume ACP sessions
+- **Trae:** no `loadSession` — acpx always creates new ACP session on reconnect (but trae-cli's own `--resume` works independently)
+
+### index.json optional fields
+
+`name` field is optional in index.json entries. Present when session was created with `acpx <agent> sessions new --name <name>`.
 
 ### ACP event format (real data)
 
@@ -48,7 +71,7 @@ Each agent has its own CLI convention. When adding new agents, check their `--he
 ## Commands
 
 ```bash
-cargo test          # Run 46 unit tests
+cargo test          # Run 88 unit tests
 cargo run           # Launch TUI
 cargo build --release  # Release binary (target/release/acpx-tui)
 ```
