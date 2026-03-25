@@ -18,6 +18,7 @@ pub struct App {
     pub status_message: Option<String>,
     pub event_scroll: u16,
     pub focused_panel: Panel,
+    pub confirm_delete: bool,
     sessions_dir: Option<std::path::PathBuf>,
 }
 
@@ -40,6 +41,7 @@ impl App {
             status_message: None,
             event_scroll: 0,
             focused_panel: Panel::Sessions,
+            confirm_delete: false,
             sessions_dir: None,
         }
     }
@@ -64,6 +66,7 @@ impl App {
             status_message: None,
             event_scroll: 0,
             focused_panel: Panel::Sessions,
+            confirm_delete: false,
             sessions_dir: Some(dir.to_path_buf()),
         }
     }
@@ -135,6 +138,40 @@ impl App {
 
     pub fn clear_status_message(&mut self) {
         self.status_message = None;
+    }
+
+    pub fn request_delete(&mut self) {
+        if self.selected_session().is_some() {
+            self.confirm_delete = true;
+        }
+    }
+
+    pub fn confirm_delete_yes(&mut self) {
+        self.confirm_delete = false;
+        if let Some(session) = self.selected_session().cloned() {
+            let dir = self
+                .sessions_dir
+                .clone()
+                .unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .expect("no home dir")
+                        .join(".acpx")
+                        .join("sessions")
+                });
+            match sessions::delete_session(&dir, &session.acpx_record_id) {
+                Ok(()) => {
+                    self.set_status_message("Session deleted".to_string());
+                    self.refresh();
+                }
+                Err(e) => {
+                    self.set_status_message(format!("Delete failed: {}", e));
+                }
+            }
+        }
+    }
+
+    pub fn cancel_delete(&mut self) {
+        self.confirm_delete = false;
     }
 
     fn reload_events(&mut self) {
@@ -338,5 +375,45 @@ mod tests {
         assert_eq!(app.status_message.as_deref(), Some("test message"));
         app.clear_status_message();
         assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_request_delete_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::with_sessions_dir(dir.path());
+        app.request_delete();
+        assert!(!app.confirm_delete); // No sessions, should not enter confirm mode
+    }
+
+    #[test]
+    fn test_request_delete_with_sessions() {
+        let dir = setup_test_sessions(2);
+        let mut app = App::with_sessions_dir(dir.path());
+        app.request_delete();
+        assert!(app.confirm_delete);
+    }
+
+    #[test]
+    fn test_cancel_delete() {
+        let dir = setup_test_sessions(2);
+        let mut app = App::with_sessions_dir(dir.path());
+        app.request_delete();
+        assert!(app.confirm_delete);
+        app.cancel_delete();
+        assert!(!app.confirm_delete);
+    }
+
+    #[test]
+    fn test_confirm_delete_yes() {
+        let dir = setup_test_sessions(3);
+        let mut app = App::with_sessions_dir(dir.path());
+        assert_eq!(app.sessions.len(), 3);
+
+        app.request_delete();
+        app.confirm_delete_yes();
+
+        assert!(!app.confirm_delete);
+        assert_eq!(app.sessions.len(), 2);
+        assert_eq!(app.status_message.as_deref(), Some("Session deleted"));
     }
 }

@@ -38,6 +38,16 @@ fn main() -> io::Result<()> {
                     }
                     // Clear status message on any key press
                     app.clear_status_message();
+
+                    // Handle delete confirmation mode
+                    if app.confirm_delete {
+                        match key.code {
+                            KeyCode::Char('y') => app.confirm_delete_yes(),
+                            _ => app.cancel_delete(),
+                        }
+                        continue;
+                    }
+
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             app.should_quit = true;
@@ -53,6 +63,7 @@ fn main() -> io::Result<()> {
                         },
                         KeyCode::Char('r') => app.refresh(),
                         KeyCode::Char('d') => app.toggle_details(),
+                        KeyCode::Char('D') => app.request_delete(),
                         KeyCode::Enter => {
                             if let Some(session) = app.selected_session().cloned() {
                                 let info = agents::lookup(&session.agent_type);

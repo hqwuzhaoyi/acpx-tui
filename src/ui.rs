@@ -154,6 +154,21 @@ fn draw_events(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    if app.confirm_delete {
+        if let Some(s) = app.selected_session() {
+            let short_id: String = s.acpx_record_id.chars().take(8).collect();
+            let bar = Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(" Delete session {}? ", short_id),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("(y/n)", Style::default().fg(Color::Yellow)),
+            ]));
+            f.render_widget(bar, area);
+            return;
+        }
+    }
+
     if let Some(ref msg) = app.status_message {
         let bar = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -174,6 +189,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" Details  "),
         Span::styled("[r]", Style::default().fg(Color::Cyan)),
         Span::raw(" Refresh  "),
+        Span::styled("[D]", Style::default().fg(Color::Red)),
+        Span::raw(" Delete  "),
         Span::styled("[q]", Style::default().fg(Color::Cyan)),
         Span::raw(" Quit"),
     ]));

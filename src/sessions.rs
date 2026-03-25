@@ -164,6 +164,80 @@ pub fn load_sessions() -> Vec<Session> {
     load_sessions_from(&default_sessions_dir())
 }
 
+/// Delete a session: remove from index.json, delete <id>.json and <id>.stream.ndjson
+pub fn delete_session(dir: &Path, acpx_record_id: &str) -> Result<(), String> {
+    let index_path = dir.join("index.json");
+    let data = std::fs::read_to_string(&index_path)
+        .map_err(|e| format!("Failed to read index.json: {}", e))?;
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| format!("Failed to parse index.json: {}", e))?;
+
+    let mut obj = raw
+        .as_object()
+        .ok_or("index.json is not an object")?
+        .clone();
+
+    // Filter entries
+    let entries = obj
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .ok_or("missing entries array")?;
+
+    let mut detail_file: Option<String> = None;
+    let filtered: Vec<&serde_json::Value> = entries
+        .iter()
+        .filter(|e| {
+            let id = e.get("acpxRecordId").and_then(|v| v.as_str()).unwrap_or("");
+            if id == acpx_record_id {
+                detail_file = e.get("file").and_then(|v| v.as_str()).map(String::from);
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    obj.insert(
+        "entries".to_string(),
+        serde_json::Value::Array(filtered.into_iter().cloned().collect()),
+    );
+
+    // Also update "files" array if present
+    if let Some(files) = obj.get("files").and_then(|v| v.as_array()) {
+        if let Some(ref df) = detail_file {
+            let filtered_files: Vec<&serde_json::Value> = files
+                .iter()
+                .filter(|f| f.as_str() != Some(df.as_str()))
+                .collect();
+            obj.insert(
+                "files".to_string(),
+                serde_json::Value::Array(filtered_files.into_iter().cloned().collect()),
+            );
+        }
+    }
+
+    // Write back index.json
+    let new_data = serde_json::to_string_pretty(&obj)
+        .map_err(|e| format!("Failed to serialize index.json: {}", e))?;
+    std::fs::write(&index_path, new_data)
+        .map_err(|e| format!("Failed to write index.json: {}", e))?;
+
+    // Delete detail file
+    if let Some(ref df) = detail_file {
+        let detail_path = dir.join(df);
+        let _ = std::fs::remove_file(&detail_path);
+
+        // Delete stream file: replace .json with .stream.ndjson
+        if let Some(stem) = df.strip_suffix(".json") {
+            let stream_path = dir.join(format!("{}.stream.ndjson", stem));
+            let _ = std::fs::remove_file(&stream_path);
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +488,79 @@ mod tests {
     #[test]
     fn test_parse_agent_type_pi() {
         assert_eq!(parse_agent_type("npx pi-acp"), "pi");
+    }
+
+    #[test]
+    fn test_delete_session_removes_files_and_index_entry() {
+        let dir = create_test_dir();
+
+        let index = r#"{
+            "schema": "acpx.session-index.v1",
+            "files": ["abc.json", "def.json"],
+            "entries": [
+                {
+                    "file": "abc.json",
+                    "acpxRecordId": "abc",
+                    "acpSessionId": "sess-abc",
+                    "agentCommand": "claude",
+                    "cwd": "/tmp/a",
+                    "closed": false,
+                    "lastUsedAt": "2026-03-14T14:00:00Z"
+                },
+                {
+                    "file": "def.json",
+                    "acpxRecordId": "def",
+                    "acpSessionId": "sess-def",
+                    "agentCommand": "codex",
+                    "cwd": "/tmp/b",
+                    "closed": false,
+                    "lastUsedAt": "2026-03-14T15:00:00Z"
+                }
+            ]
+        }"#;
+        fs::write(dir.path().join("index.json"), index).unwrap();
+        fs::write(dir.path().join("abc.json"), "{}").unwrap();
+        fs::write(dir.path().join("abc.stream.ndjson"), "").unwrap();
+        fs::write(dir.path().join("def.json"), "{}").unwrap();
+
+        // Delete "abc" session
+        delete_session(dir.path(), "abc").unwrap();
+
+        // abc files should be gone
+        assert!(!dir.path().join("abc.json").exists());
+        assert!(!dir.path().join("abc.stream.ndjson").exists());
+
+        // def files should remain
+        assert!(dir.path().join("def.json").exists());
+
+        // index.json should only have "def"
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("index.json")).unwrap())
+                .unwrap();
+        let entries = updated["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["acpxRecordId"], "def");
+
+        let files = updated["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0], "def.json");
+    }
+
+    #[test]
+    fn test_delete_session_nonexistent_id() {
+        let dir = create_test_dir();
+        let index = r#"{"schema":"v1","files":[],"entries":[]}"#;
+        fs::write(dir.path().join("index.json"), index).unwrap();
+
+        // Should succeed (no-op) even if ID doesn't exist
+        delete_session(dir.path(), "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn test_delete_session_no_index() {
+        let dir = create_test_dir();
+        // No index.json
+        let result = delete_session(dir.path(), "abc");
+        assert!(result.is_err());
     }
 }
