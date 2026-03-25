@@ -68,7 +68,7 @@ fn main() -> io::Result<()> {
                             if let Some(session) = app.selected_session().cloned() {
                                 let info = agents::lookup(&session.agent_type);
                                 let can_resume = info
-                                    .map(|i| matches!(i.resume, agents::ResumePattern::CliFlag { .. }))
+                                    .map(|i| !matches!(i.resume, agents::ResumePattern::Unsupported))
                                     .unwrap_or(false);
 
                                 if can_resume {

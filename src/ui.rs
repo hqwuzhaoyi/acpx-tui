@@ -76,12 +76,19 @@ fn draw_sessions(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(agent_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(cwd_short, style),
-            ]);
-            let detail = Line::from(vec![
-                Span::raw("  "),
                 Span::styled(
-                    format!("{} · {}", age, s.status),
+                    s.name.as_deref().unwrap_or(&cwd_short).to_string(),
+                    style,
+                ),
+            ]);
+            let detail_line = if s.name.is_some() {
+                format!("  {} · {} · {}", cwd_short, age, s.status)
+            } else {
+                format!("  {} · {}", age, s.status)
+            };
+            let detail = Line::from(vec![
+                Span::styled(
+                    detail_line,
                     Style::default().fg(Color::DarkGray),
                 ),
             ]);

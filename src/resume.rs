@@ -27,6 +27,10 @@ pub fn build_resume_command(session: &Session) -> Result<(String, Vec<String>), 
             binary.to_string(),
             vec![flag.to_string(), session.acp_session_id.clone()],
         )),
+        Some(ResumePattern::CliFlagEq { binary, flag }) => Ok((
+            binary.to_string(),
+            vec![format!("{}={}", flag, session.acp_session_id)],
+        )),
         _ => Err(ResumeError::UnsupportedAgent(session.agent_type.clone())),
     }
 }
@@ -63,6 +67,7 @@ mod tests {
             status: SessionStatus::Exited,
             last_used_at: "2026-01-01T00:00:00Z".to_string(),
             stream_path: None,
+            name: None,
         }
     }
 
@@ -99,7 +104,7 @@ mod tests {
         let session = make_session("trae", "trae-sess-1");
         let (prog, args) = build_resume_command(&session).unwrap();
         assert_eq!(prog, "trae-cli");
-        assert_eq!(args, vec!["--resume", "trae-sess-1"]);
+        assert_eq!(args, vec!["--resume=trae-sess-1"]);
     }
 
     #[test]

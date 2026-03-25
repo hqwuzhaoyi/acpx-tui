@@ -2,8 +2,13 @@ use ratatui::style::Color;
 
 /// Resume command pattern for an agent
 pub enum ResumePattern {
-    /// `<binary> <flag> <session_id>` — agent supports resume
+    /// `<binary> <flag> <session_id>` — flag and session_id as separate args
     CliFlag {
+        binary: &'static str,
+        flag: &'static str,
+    },
+    /// `<binary> <flag>=<session_id>` — flag and session_id joined with '='
+    CliFlagEq {
         binary: &'static str,
         flag: &'static str,
     },
@@ -27,7 +32,7 @@ pub const AGENTS: &[AgentInfo] = &[
     AgentInfo { name: "openclaw", display_color: Color::Blue,             resume: ResumePattern::Unsupported },
     AgentInfo { name: "codex",    display_color: Color::Cyan,             resume: ResumePattern::CliFlag { binary: "codex", flag: "resume" } },
     AgentInfo { name: "claude",   display_color: Color::Magenta,          resume: ResumePattern::CliFlag { binary: "claude", flag: "--resume" } },
-    AgentInfo { name: "trae",     display_color: Color::LightCyan,        resume: ResumePattern::CliFlag { binary: "trae-cli", flag: "--resume" } },
+    AgentInfo { name: "trae",     display_color: Color::LightCyan,        resume: ResumePattern::CliFlagEq { binary: "trae-cli", flag: "--resume" } },
     AgentInfo { name: "gemini",   display_color: Color::Yellow,           resume: ResumePattern::Unsupported },
     AgentInfo { name: "cursor",   display_color: Color::LightGreen,       resume: ResumePattern::Unsupported },
     AgentInfo { name: "copilot",  display_color: Color::White,            resume: ResumePattern::Unsupported },
@@ -73,7 +78,7 @@ mod tests {
     fn test_lookup_trae() {
         let info = lookup("trae").unwrap();
         assert_eq!(info.name, "trae");
-        assert!(matches!(info.resume, ResumePattern::CliFlag { binary: "trae-cli", .. }));
+        assert!(matches!(info.resume, ResumePattern::CliFlagEq { binary: "trae-cli", .. }));
     }
 
     #[test]
@@ -97,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_resume_agents_count() {
-        let resumable: Vec<_> = AGENTS.iter().filter(|a| matches!(a.resume, ResumePattern::CliFlag { .. })).collect();
+        let resumable: Vec<_> = AGENTS.iter().filter(|a| !matches!(a.resume, ResumePattern::Unsupported)).collect();
         assert_eq!(resumable.len(), 3); // claude, codex, trae
     }
 }

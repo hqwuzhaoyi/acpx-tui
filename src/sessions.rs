@@ -21,6 +21,7 @@ pub struct SessionIndexEntry {
     pub cwd: String,
     pub closed: bool,
     pub last_used_at: String,
+    pub name: Option<String>,
 }
 
 /// Full session detail from <id>.json (snake_case)
@@ -72,6 +73,7 @@ pub struct Session {
     pub status: SessionStatus,
     pub last_used_at: String,
     pub stream_path: Option<String>,
+    pub name: Option<String>,
 }
 
 /// Parse agent type from agent_command string
@@ -154,6 +156,7 @@ pub fn load_sessions_from(dir: &Path) -> Vec<Session> {
                 status,
                 last_used_at: entry.last_used_at.clone(),
                 stream_path,
+                name: entry.name.clone(),
             })
         })
         .collect()
