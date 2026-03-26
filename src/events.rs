@@ -165,6 +165,77 @@ pub fn load_recent_events(path: &str, max_events: usize) -> Vec<DisplayEvent> {
     }
 }
 
+/// Internal helper: parse once, return (event, is_assistant_delta)
+fn parse_openclaw_line(line: &str) -> Option<(DisplayEvent, bool)> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let kind = v.get("kind")?.as_str()?;
+
+    match kind {
+        "assistant_delta" => {
+            let delta = v.get("delta")?.as_str()?;
+            if delta.is_empty() {
+                return None;
+            }
+            Some((DisplayEvent::Message(delta.to_string()), true))
+        }
+        "system_event" => {
+            let text = v.get("text")?.as_str()?;
+            if text.is_empty() {
+                return None;
+            }
+            Some((DisplayEvent::Message(text.to_string()), false))
+        }
+        _ => None,
+    }
+}
+
+/// Parse a single OpenClaw NDJSON line into a DisplayEvent
+pub fn parse_openclaw_event(line: &str) -> Option<DisplayEvent> {
+    parse_openclaw_line(line).map(|(event, _)| event)
+}
+
+/// Load last N events from an OpenClaw .stream.ndjson file, merging consecutive assistant_deltas
+pub fn load_openclaw_events(path: &str, max_events: usize) -> Vec<DisplayEvent> {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return vec![],
+    };
+
+    let reader = std::io::BufReader::new(file);
+    let mut events: Vec<DisplayEvent> = Vec::new();
+    let mut last_was_delta = false;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        if let Some((event, is_delta)) = parse_openclaw_line(&line) {
+            // Merge consecutive assistant_delta messages
+            if is_delta && last_was_delta {
+                if let DisplayEvent::Message(ref new_text) = event {
+                    if let Some(DisplayEvent::Message(ref mut prev_text)) = events.last_mut() {
+                        prev_text.push_str(new_text);
+                        continue;
+                    }
+                }
+            }
+            last_was_delta = is_delta;
+            events.push(event);
+        } else {
+            last_was_delta = false;
+        }
+    }
+
+    // Return last N
+    if events.len() > max_events {
+        events.split_off(events.len() - max_events)
+    } else {
+        events
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,5 +573,168 @@ mod tests {
         ];
         let merged = merge_events(events);
         assert_eq!(merged.len(), 2);
+    }
+
+    // --- OpenClaw event parsing tests ---
+
+    #[test]
+    fn test_parse_openclaw_assistant_delta() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","kind":"assistant_delta","delta":"Hello"}"#;
+        let event = parse_openclaw_event(line).unwrap();
+        match event {
+            DisplayEvent::Message(text) => assert_eq!(text, "Hello"),
+            _ => panic!("Expected Message event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_openclaw_assistant_delta_empty() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","kind":"assistant_delta","delta":""}"#;
+        assert!(parse_openclaw_event(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_openclaw_system_event() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","kind":"system_event","text":"Started codex session","contextKey":"acp-spawn:123"}"#;
+        let event = parse_openclaw_event(line).unwrap();
+        match event {
+            DisplayEvent::Message(text) => assert_eq!(text, "Started codex session"),
+            _ => panic!("Expected Message event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_openclaw_system_event_empty() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","kind":"system_event","text":"","contextKey":"acp-spawn:123"}"#;
+        assert!(parse_openclaw_event(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_openclaw_lifecycle_ignored() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","kind":"lifecycle","phase":"start","data":{"phase":"start"}}"#;
+        assert!(parse_openclaw_event(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_openclaw_unknown_kind_ignored() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","kind":"some_future_event","data":{}}"#;
+        assert!(parse_openclaw_event(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_openclaw_invalid_json() {
+        assert!(parse_openclaw_event("not json").is_none());
+        assert!(parse_openclaw_event("").is_none());
+    }
+
+    #[test]
+    fn test_load_openclaw_events_mixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.stream.ndjson");
+        let content = [
+            r#"{"ts":"t1","kind":"lifecycle","phase":"start","data":{"phase":"start"}}"#,
+            r#"{"ts":"t2","kind":"assistant_delta","delta":"Hello "}"#,
+            r#"{"ts":"t3","kind":"assistant_delta","delta":"world"}"#,
+            r#"{"ts":"t4","kind":"system_event","text":"codex: done","contextKey":"acp:1"}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = load_openclaw_events(path.to_str().unwrap(), 10);
+        // lifecycle ignored, two assistant_deltas merged, system_event separate
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            DisplayEvent::Message(text) => assert_eq!(text, "Hello world"),
+            _ => panic!("Expected merged Message"),
+        }
+        match &events[1] {
+            DisplayEvent::Message(text) => assert_eq!(text, "codex: done"),
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_load_openclaw_events_merging_consecutive_deltas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.stream.ndjson");
+        let content = [
+            r#"{"ts":"t1","kind":"assistant_delta","delta":"我"}"#,
+            r#"{"ts":"t2","kind":"assistant_delta","delta":"先"}"#,
+            r#"{"ts":"t3","kind":"assistant_delta","delta":"读"}"#,
+            r#"{"ts":"t4","kind":"system_event","text":"summary","contextKey":"k"}"#,
+            r#"{"ts":"t5","kind":"assistant_delta","delta":"OK"}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = load_openclaw_events(path.to_str().unwrap(), 10);
+        assert_eq!(events.len(), 3);
+        match &events[0] {
+            DisplayEvent::Message(text) => assert_eq!(text, "我先读"),
+            _ => panic!("Expected merged Message"),
+        }
+        match &events[1] {
+            DisplayEvent::Message(text) => assert_eq!(text, "summary"),
+            _ => panic!("Expected Message"),
+        }
+        match &events[2] {
+            DisplayEvent::Message(text) => assert_eq!(text, "OK"),
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_load_openclaw_events_max_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.stream.ndjson");
+        let mut lines = Vec::new();
+        for i in 0..5 {
+            lines.push(format!(
+                r#"{{"ts":"t{i}","kind":"system_event","text":"event {i}","contextKey":"k"}}"#,
+            ));
+        }
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let events = load_openclaw_events(path.to_str().unwrap(), 2);
+        assert_eq!(events.len(), 2);
+        // Should be the last 2
+        match &events[0] {
+            DisplayEvent::Message(text) => assert_eq!(text, "event 3"),
+            _ => panic!("Expected Message"),
+        }
+        match &events[1] {
+            DisplayEvent::Message(text) => assert_eq!(text, "event 4"),
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_load_openclaw_events_missing_file() {
+        let events = load_openclaw_events("/nonexistent/file.ndjson", 10);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_lifecycle_between_deltas_breaks_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.stream.ndjson");
+        let content = [
+            r#"{"ts":"t1","kind":"assistant_delta","delta":"Hello "}"#,
+            r#"{"ts":"t2","kind":"lifecycle","phase":"end","data":{"phase":"end"}}"#,
+            r#"{"ts":"t3","kind":"assistant_delta","delta":"world"}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = load_openclaw_events(path.to_str().unwrap(), 10);
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            DisplayEvent::Message(text) => assert_eq!(text, "Hello "),
+            _ => panic!("Expected Message"),
+        }
+        match &events[1] {
+            DisplayEvent::Message(text) => assert_eq!(text, "world"),
+            _ => panic!("Expected Message"),
+        }
     }
 }

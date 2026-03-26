@@ -184,11 +184,25 @@ impl App {
 }
 
 fn load_events_for(session: &Session) -> Vec<DisplayEvent> {
-    session
-        .stream_path
-        .as_ref()
-        .map(|p| events::load_recent_events(p, 50))
-        .unwrap_or_default()
+    // Try acpx stream first
+    if let Some(ref path) = session.stream_path {
+        let events = events::load_recent_events(path, 50);
+        if !events.is_empty() {
+            return events;
+        }
+    }
+
+    // Fallback: try openclaw stream
+    if let Some(oc_path) = sessions::resolve_openclaw_stream(session) {
+        if let Some(path_str) = oc_path.to_str() {
+            let events = events::load_openclaw_events(path_str, 50);
+            if !events.is_empty() {
+                return events;
+            }
+        }
+    }
+
+    vec![]
 }
 
 #[cfg(test)]
@@ -415,5 +429,71 @@ mod tests {
         assert!(!app.confirm_delete);
         assert_eq!(app.sessions.len(), 2);
         assert_eq!(app.status_message.as_deref(), Some("Session deleted"));
+    }
+
+    #[test]
+    fn test_load_events_for_acpx_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let stream_path = dir.path().join("test.stream.ndjson");
+        let content = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello from acpx"}}}}"#;
+        fs::write(&stream_path, content).unwrap();
+
+        let session = sessions::Session {
+            acpx_record_id: "rec-1".into(),
+            acp_session_id: "sess-1".into(),
+            agent_type: "claude".into(),
+            cwd: "/tmp".into(),
+            status: sessions::SessionStatus::Exited,
+            last_used_at: "2026-01-01T00:00:00Z".into(),
+            stream_path: Some(stream_path.to_str().unwrap().to_string()),
+            name: None,
+        };
+
+        let events = load_events_for(&session);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            crate::events::DisplayEvent::Message(text) => assert_eq!(text, "Hello from acpx"),
+            _ => panic!("Expected Message event"),
+        }
+    }
+
+    #[test]
+    fn test_load_events_for_no_stream_no_openclaw() {
+        let session = sessions::Session {
+            acpx_record_id: "rec-1".into(),
+            acp_session_id: "sess-1".into(),
+            agent_type: "claude".into(),
+            cwd: "/tmp".into(),
+            status: sessions::SessionStatus::Exited,
+            last_used_at: "2026-01-01T00:00:00Z".into(),
+            stream_path: None,
+            name: None,
+        };
+
+        let events = load_events_for(&session);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_load_events_for_empty_acpx_stream_falls_through() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create an empty stream file (no parseable events)
+        let stream_path = dir.path().join("empty.stream.ndjson");
+        fs::write(&stream_path, "").unwrap();
+
+        let session = sessions::Session {
+            acpx_record_id: "rec-1".into(),
+            acp_session_id: "sess-1".into(),
+            agent_type: "codex".into(),
+            cwd: "/tmp".into(),
+            status: sessions::SessionStatus::Exited,
+            last_used_at: "2026-01-01T00:00:00Z".into(),
+            stream_path: Some(stream_path.to_str().unwrap().to_string()),
+            name: Some("agent:codex:acp:fake-uuid".into()),
+        };
+
+        // Falls through acpx (empty), then openclaw resolve fails (no real openclaw dir)
+        let events = load_events_for(&session);
+        assert!(events.is_empty());
     }
 }

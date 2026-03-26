@@ -21,6 +21,7 @@ pub struct SessionIndexEntry {
     pub cwd: String,
     pub closed: bool,
     pub last_used_at: String,
+    #[serde(default)]
     pub name: Option<String>,
 }
 
@@ -165,6 +166,100 @@ pub fn load_sessions_from(dir: &Path) -> Vec<Session> {
 /// Load all sessions from default ~/.acpx/sessions/ directory
 pub fn load_sessions() -> Vec<Session> {
     load_sessions_from(&default_sessions_dir())
+}
+
+// --- OpenClaw session association ---
+
+/// Parsed reference from an acpx session name like "agent:<agent>:acp:<uuid>"
+#[derive(Debug, PartialEq)]
+pub struct OpenClawRef {
+    pub agent: String,
+}
+
+/// Parse an acpx session name into an OpenClawRef if it matches "agent:<agent>:acp:<uuid>"
+pub fn parse_openclaw_ref(name: &str) -> Option<OpenClawRef> {
+    let rest = name.strip_prefix("agent:")?;
+    let (agent, after_agent) = rest.split_once(':')?;
+    let uuid = after_agent.strip_prefix("acp:")?;
+    if agent.is_empty() || uuid.is_empty() {
+        return None;
+    }
+    Some(OpenClawRef {
+        agent: agent.to_string(),
+    })
+}
+
+/// One entry in ~/.openclaw/agents/<agent>/sessions/sessions.json
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OcSessionEntry {
+    session_id: String,
+    key: String,
+    #[serde(default)]
+    acpx_record_id: Option<String>,
+}
+
+/// Root of openclaw sessions.json
+#[derive(Debug, Deserialize)]
+struct OcSessionsFile {
+    sessions: Vec<OcSessionEntry>,
+}
+
+/// Find the openclaw sessionId by matching acpxRecordId (preferred) or key
+pub fn find_oc_session_id(
+    path: &Path,
+    acpx_record_id: &str,
+    session_key: &str,
+) -> Option<String> {
+    let data = std::fs::read_to_string(path).ok()?;
+    let file: OcSessionsFile = serde_json::from_str(&data).ok()?;
+
+    // Prefer acpxRecordId match
+    if let Some(entry) = file
+        .sessions
+        .iter()
+        .find(|e| e.acpx_record_id.as_deref() == Some(acpx_record_id))
+    {
+        return Some(entry.session_id.clone());
+    }
+
+    // Fallback: match by key
+    file.sessions
+        .iter()
+        .find(|e| e.key == session_key)
+        .map(|e| e.session_id.clone())
+}
+
+/// Resolve the openclaw stream path for a session, if it has an openclaw association.
+/// Returns None gracefully if the session has no name, no openclaw ref, or the files don't exist.
+pub fn resolve_openclaw_stream(session: &Session) -> Option<PathBuf> {
+    let name = session.name.as_deref()?;
+    let oc_ref = parse_openclaw_ref(name)?;
+
+    let home = dirs::home_dir()?;
+    let oc_sessions_path = home
+        .join(".openclaw")
+        .join("agents")
+        .join(&oc_ref.agent)
+        .join("sessions")
+        .join("sessions.json");
+
+    let session_key = name;
+    let session_id =
+        find_oc_session_id(&oc_sessions_path, &session.acpx_record_id, session_key)?;
+
+    let stream_path = home
+        .join(".openclaw")
+        .join("agents")
+        .join(&oc_ref.agent)
+        .join("sessions")
+        .join(format!("{}.acp-stream.jsonl", session_id));
+
+    if stream_path.exists() {
+        Some(stream_path)
+    } else {
+        None
+    }
 }
 
 /// Delete a session: remove from index.json, delete <id>.json and <id>.stream.ndjson
@@ -565,5 +660,292 @@ mod tests {
         // No index.json
         let result = delete_session(dir.path(), "abc");
         assert!(result.is_err());
+    }
+
+    // --- OpenClaw tests ---
+
+    #[test]
+    fn test_parse_openclaw_ref_valid() {
+        let r = parse_openclaw_ref("agent:codex:acp:e68f428a-1234-5678-9abc-def012345678");
+        assert_eq!(
+            r,
+            Some(OpenClawRef {
+                agent: "codex".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_openclaw_ref_different_agent() {
+        let r = parse_openclaw_ref("agent:claude:acp:abcd-1234");
+        assert_eq!(
+            r,
+            Some(OpenClawRef {
+                agent: "claude".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_openclaw_ref_no_prefix() {
+        assert_eq!(parse_openclaw_ref("my-session-name"), None);
+    }
+
+    #[test]
+    fn test_parse_openclaw_ref_missing_acp() {
+        assert_eq!(parse_openclaw_ref("agent:codex:something:uuid"), None);
+    }
+
+    #[test]
+    fn test_parse_openclaw_ref_empty_agent() {
+        assert_eq!(parse_openclaw_ref("agent::acp:uuid"), None);
+    }
+
+    #[test]
+    fn test_parse_openclaw_ref_empty_uuid() {
+        assert_eq!(parse_openclaw_ref("agent:codex:acp:"), None);
+    }
+
+    #[test]
+    fn test_parse_openclaw_ref_empty_string() {
+        assert_eq!(parse_openclaw_ref(""), None);
+    }
+
+    #[test]
+    fn test_find_oc_session_id_by_acpx_record_id() {
+        let dir = create_test_dir();
+        let path = dir.path().join("sessions.json");
+        fs::write(
+            &path,
+            r#"{
+                "sessions": [
+                    {
+                        "sessionId": "oc-sess-111",
+                        "key": "agent:codex:acp:aaa",
+                        "acpxRecordId": "record-abc"
+                    },
+                    {
+                        "sessionId": "oc-sess-222",
+                        "key": "agent:codex:acp:bbb",
+                        "acpxRecordId": "record-def"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let result = find_oc_session_id(&path, "record-def", "agent:codex:acp:bbb");
+        assert_eq!(result, Some("oc-sess-222".into()));
+    }
+
+    #[test]
+    fn test_find_oc_session_id_by_key_fallback() {
+        let dir = create_test_dir();
+        let path = dir.path().join("sessions.json");
+        fs::write(
+            &path,
+            r#"{
+                "sessions": [
+                    {
+                        "sessionId": "oc-sess-333",
+                        "key": "agent:codex:acp:ccc"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        // acpxRecordId won't match (entry has none), but key will
+        let result = find_oc_session_id(&path, "no-match", "agent:codex:acp:ccc");
+        assert_eq!(result, Some("oc-sess-333".into()));
+    }
+
+    #[test]
+    fn test_find_oc_session_id_not_found() {
+        let dir = create_test_dir();
+        let path = dir.path().join("sessions.json");
+        fs::write(
+            &path,
+            r#"{
+                "sessions": [
+                    {
+                        "sessionId": "oc-sess-444",
+                        "key": "agent:codex:acp:ddd",
+                        "acpxRecordId": "record-xyz"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let result = find_oc_session_id(&path, "no-match", "no-match-key");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_oc_session_id_missing_file() {
+        let result = find_oc_session_id(Path::new("/nonexistent/sessions.json"), "id", "key");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_oc_session_id_prefers_acpx_record_id() {
+        let dir = create_test_dir();
+        let path = dir.path().join("sessions.json");
+        // Both entries match key, but only one matches acpxRecordId
+        fs::write(
+            &path,
+            r#"{
+                "sessions": [
+                    {
+                        "sessionId": "oc-by-key",
+                        "key": "agent:codex:acp:same-key"
+                    },
+                    {
+                        "sessionId": "oc-by-record",
+                        "key": "agent:codex:acp:same-key",
+                        "acpxRecordId": "target-record"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let result = find_oc_session_id(&path, "target-record", "agent:codex:acp:same-key");
+        assert_eq!(result, Some("oc-by-record".into()));
+    }
+
+    #[test]
+    fn test_resolve_openclaw_stream_no_name() {
+        let session = Session {
+            acpx_record_id: "rec-1".into(),
+            acp_session_id: "sess-1".into(),
+            agent_type: "codex".into(),
+            cwd: "/tmp".into(),
+            status: SessionStatus::Exited,
+            last_used_at: "2026-01-01T00:00:00Z".into(),
+            stream_path: None,
+            name: None,
+        };
+        assert_eq!(resolve_openclaw_stream(&session), None);
+    }
+
+    #[test]
+    fn test_resolve_openclaw_stream_non_openclaw_name() {
+        let session = Session {
+            acpx_record_id: "rec-1".into(),
+            acp_session_id: "sess-1".into(),
+            agent_type: "codex".into(),
+            cwd: "/tmp".into(),
+            status: SessionStatus::Exited,
+            last_used_at: "2026-01-01T00:00:00Z".into(),
+            stream_path: None,
+            name: Some("my-custom-session".into()),
+        };
+        assert_eq!(resolve_openclaw_stream(&session), None);
+    }
+
+    #[test]
+    fn test_resolve_openclaw_stream_missing_openclaw_dir() {
+        let session = Session {
+            acpx_record_id: "rec-1".into(),
+            acp_session_id: "sess-1".into(),
+            agent_type: "codex".into(),
+            cwd: "/tmp".into(),
+            status: SessionStatus::Exited,
+            last_used_at: "2026-01-01T00:00:00Z".into(),
+            stream_path: None,
+            name: Some("agent:codex:acp:e68f428a-0000-0000-0000-000000000000".into()),
+        };
+        let result = resolve_openclaw_stream(&session);
+        assert!(result.is_none() || result.unwrap().exists());
+    }
+
+    #[test]
+    fn test_load_sessions_with_name() {
+        let dir = create_test_dir();
+
+        let index = r#"{
+            "schema": "acpx.session-index.v1",
+            "files": ["named.json"],
+            "entries": [{
+                "file": "named.json",
+                "acpxRecordId": "named-rec",
+                "acpSessionId": "named-sess",
+                "agentCommand": "npx @zed-industries/codex-acp@^0.9.5",
+                "cwd": "/tmp/project",
+                "closed": false,
+                "lastUsedAt": "2026-03-14T14:00:00Z",
+                "name": "agent:codex:acp:e68f428a-1234"
+            }]
+        }"#;
+        fs::write(dir.path().join("index.json"), index).unwrap();
+
+        let detail = r#"{
+            "schema": "acpx.session.v1",
+            "acpx_record_id": "named-rec",
+            "acp_session_id": "named-sess",
+            "agent_command": "npx @zed-industries/codex-acp@^0.9.5",
+            "cwd": "/tmp/project",
+            "created_at": "2026-03-14T14:00:00Z",
+            "last_used_at": "2026-03-14T14:00:00Z",
+            "last_seq": 10,
+            "closed": false,
+            "pid": null,
+            "agent_started_at": null,
+            "last_agent_exit_at": null,
+            "last_agent_disconnect_reason": null,
+            "event_log": null
+        }"#;
+        fs::write(dir.path().join("named.json"), detail).unwrap();
+
+        let sessions = load_sessions_from(dir.path());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].name,
+            Some("agent:codex:acp:e68f428a-1234".into())
+        );
+    }
+
+    #[test]
+    fn test_load_sessions_without_name() {
+        let dir = create_test_dir();
+
+        let index = r#"{
+            "schema": "acpx.session-index.v1",
+            "files": ["noname.json"],
+            "entries": [{
+                "file": "noname.json",
+                "acpxRecordId": "nn-rec",
+                "acpSessionId": "nn-sess",
+                "agentCommand": "npx -y @zed-industries/claude-agent-acp@^0.21.0",
+                "cwd": "/tmp/project",
+                "closed": false,
+                "lastUsedAt": "2026-03-14T14:00:00Z"
+            }]
+        }"#;
+        fs::write(dir.path().join("index.json"), index).unwrap();
+
+        let detail = r#"{
+            "schema": "acpx.session.v1",
+            "acpx_record_id": "nn-rec",
+            "acp_session_id": "nn-sess",
+            "agent_command": "npx -y @zed-industries/claude-agent-acp@^0.21.0",
+            "cwd": "/tmp/project",
+            "created_at": "2026-03-14T14:00:00Z",
+            "last_used_at": "2026-03-14T14:00:00Z",
+            "last_seq": 0,
+            "closed": false,
+            "pid": null,
+            "agent_started_at": null,
+            "last_agent_exit_at": null,
+            "last_agent_disconnect_reason": null,
+            "event_log": null
+        }"#;
+        fs::write(dir.path().join("noname.json"), detail).unwrap();
+
+        let sessions = load_sessions_from(dir.path());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, None);
     }
 }
