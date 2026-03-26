@@ -189,45 +189,45 @@ pub fn parse_openclaw_ref(name: &str) -> Option<OpenClawRef> {
     })
 }
 
-/// One entry in ~/.openclaw/agents/<agent>/sessions/sessions.json
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OcSessionEntry {
-    session_id: String,
-    key: String,
-    #[serde(default)]
-    acpx_record_id: Option<String>,
-}
-
-/// Root of openclaw sessions.json
-#[derive(Debug, Deserialize)]
-struct OcSessionsFile {
-    sessions: Vec<OcSessionEntry>,
-}
-
-/// Find the openclaw sessionId by matching acpxRecordId (preferred) or key
+/// Find the openclaw sessionId from sessions.json.
+///
+/// sessions.json is a map keyed by session name:
+///   { "agent:codex:acp:<uuid>": { "sessionId": "...", "acp": { "identity": { "acpxRecordId": "..." } } } }
+///
+/// Lookup order:
+///   1. Direct key match (session_key is the map key) — O(1)
+///   2. Fallback: scan for matching acp.identity.acpxRecordId
 pub fn find_oc_session_id(
     path: &Path,
     acpx_record_id: &str,
     session_key: &str,
 ) -> Option<String> {
     let data = std::fs::read_to_string(path).ok()?;
-    let file: OcSessionsFile = serde_json::from_str(&data).ok()?;
+    let map: serde_json::Value = serde_json::from_str(&data).ok()?;
+    let obj = map.as_object()?;
 
-    // Prefer acpxRecordId match
-    if let Some(entry) = file
-        .sessions
-        .iter()
-        .find(|e| e.acpx_record_id.as_deref() == Some(acpx_record_id))
-    {
-        return Some(entry.session_id.clone());
+    // 1. Direct key lookup
+    if let Some(entry) = obj.get(session_key) {
+        if let Some(sid) = entry.get("sessionId").and_then(|v| v.as_str()) {
+            return Some(sid.to_string());
+        }
     }
 
-    // Fallback: match by key
-    file.sessions
-        .iter()
-        .find(|e| e.key == session_key)
-        .map(|e| e.session_id.clone())
+    // 2. Fallback: match by acp.identity.acpxRecordId
+    for entry in obj.values() {
+        let rid = entry
+            .get("acp")
+            .and_then(|a| a.get("identity"))
+            .and_then(|i| i.get("acpxRecordId"))
+            .and_then(|v| v.as_str());
+        if rid == Some(acpx_record_id) {
+            if let Some(sid) = entry.get("sessionId").and_then(|v| v.as_str()) {
+                return Some(sid.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 /// Resolve the openclaw stream path for a session, if it has an openclaw association.
@@ -712,24 +712,21 @@ mod tests {
     }
 
     #[test]
-    fn test_find_oc_session_id_by_acpx_record_id() {
+    fn test_find_oc_session_id_by_key() {
         let dir = create_test_dir();
         let path = dir.path().join("sessions.json");
+        // sessions.json is a map keyed by session name
         fs::write(
             &path,
             r#"{
-                "sessions": [
-                    {
-                        "sessionId": "oc-sess-111",
-                        "key": "agent:codex:acp:aaa",
-                        "acpxRecordId": "record-abc"
-                    },
-                    {
-                        "sessionId": "oc-sess-222",
-                        "key": "agent:codex:acp:bbb",
-                        "acpxRecordId": "record-def"
-                    }
-                ]
+                "agent:codex:acp:aaa": {
+                    "sessionId": "oc-sess-111",
+                    "acp": { "identity": { "acpxRecordId": "record-abc" } }
+                },
+                "agent:codex:acp:bbb": {
+                    "sessionId": "oc-sess-222",
+                    "acp": { "identity": { "acpxRecordId": "record-def" } }
+                }
             }"#,
         )
         .unwrap();
@@ -739,24 +736,22 @@ mod tests {
     }
 
     #[test]
-    fn test_find_oc_session_id_by_key_fallback() {
+    fn test_find_oc_session_id_by_acpx_record_id_fallback() {
         let dir = create_test_dir();
         let path = dir.path().join("sessions.json");
         fs::write(
             &path,
             r#"{
-                "sessions": [
-                    {
-                        "sessionId": "oc-sess-333",
-                        "key": "agent:codex:acp:ccc"
-                    }
-                ]
+                "agent:codex:acp:ccc": {
+                    "sessionId": "oc-sess-333",
+                    "acp": { "identity": { "acpxRecordId": "target-record" } }
+                }
             }"#,
         )
         .unwrap();
 
-        // acpxRecordId won't match (entry has none), but key will
-        let result = find_oc_session_id(&path, "no-match", "agent:codex:acp:ccc");
+        // Key doesn't match, but acp.identity.acpxRecordId does
+        let result = find_oc_session_id(&path, "target-record", "agent:codex:acp:no-match");
         assert_eq!(result, Some("oc-sess-333".into()));
     }
 
@@ -767,13 +762,10 @@ mod tests {
         fs::write(
             &path,
             r#"{
-                "sessions": [
-                    {
-                        "sessionId": "oc-sess-444",
-                        "key": "agent:codex:acp:ddd",
-                        "acpxRecordId": "record-xyz"
-                    }
-                ]
+                "agent:codex:acp:ddd": {
+                    "sessionId": "oc-sess-444",
+                    "acp": { "identity": { "acpxRecordId": "record-xyz" } }
+                }
             }"#,
         )
         .unwrap();
@@ -789,30 +781,28 @@ mod tests {
     }
 
     #[test]
-    fn test_find_oc_session_id_prefers_acpx_record_id() {
+    fn test_find_oc_session_id_key_lookup_preferred() {
         let dir = create_test_dir();
         let path = dir.path().join("sessions.json");
-        // Both entries match key, but only one matches acpxRecordId
+        // Key lookup is O(1) and takes priority over acpxRecordId scan
         fs::write(
             &path,
             r#"{
-                "sessions": [
-                    {
-                        "sessionId": "oc-by-key",
-                        "key": "agent:codex:acp:same-key"
-                    },
-                    {
-                        "sessionId": "oc-by-record",
-                        "key": "agent:codex:acp:same-key",
-                        "acpxRecordId": "target-record"
-                    }
-                ]
+                "agent:codex:acp:target-key": {
+                    "sessionId": "oc-by-key",
+                    "acp": { "identity": { "acpxRecordId": "other-record" } }
+                },
+                "agent:codex:acp:other-key": {
+                    "sessionId": "oc-by-record",
+                    "acp": { "identity": { "acpxRecordId": "target-record" } }
+                }
             }"#,
         )
         .unwrap();
 
-        let result = find_oc_session_id(&path, "target-record", "agent:codex:acp:same-key");
-        assert_eq!(result, Some("oc-by-record".into()));
+        // Key matches first entry — should return that, not scan for acpxRecordId
+        let result = find_oc_session_id(&path, "target-record", "agent:codex:acp:target-key");
+        assert_eq!(result, Some("oc-by-key".into()));
     }
 
     #[test]
