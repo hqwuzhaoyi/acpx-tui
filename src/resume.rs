@@ -117,9 +117,16 @@ mod tests {
     #[test]
     fn test_build_resume_command_all_registered_unsupported() {
         // All unsupported agents should return UnsupportedAgent error
-        for name in ["pi", "openclaw", "gemini", "cursor", "copilot", "droid", "iflow", "kilocode", "kimi", "kiro", "opencode", "qwen"] {
+        for name in [
+            "pi", "openclaw", "gemini", "cursor", "copilot", "droid", "iflow", "kilocode", "kimi",
+            "kiro", "opencode", "qwen",
+        ] {
             let session = make_session(name, "sess-x");
-            assert!(build_resume_command(&session).is_err(), "{} should be unsupported", name);
+            assert!(
+                build_resume_command(&session).is_err(),
+                "{} should be unsupported",
+                name
+            );
         }
     }
 }

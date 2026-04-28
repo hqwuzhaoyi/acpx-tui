@@ -4,6 +4,7 @@ use std::io::BufRead;
 #[derive(Debug, Clone)]
 pub enum DisplayEvent {
     Message(String),
+    UserMessage(String),
     ToolCall { title: String, kind: String },
     Thinking(String),
     Usage { used: u64, size: u64 },
@@ -13,6 +14,7 @@ impl std::fmt::Display for DisplayEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DisplayEvent::Message(text) => write!(f, "💬 {}", truncate(text, 60)),
+            DisplayEvent::UserMessage(text) => write!(f, "👤 {}", truncate(text, 60)),
             DisplayEvent::ToolCall { title, kind } => {
                 write!(f, "🔧 {}: {}", kind, truncate(title, 50))
             }
@@ -65,6 +67,13 @@ pub fn parse_event(line: &str) -> Option<DisplayEvent> {
             }
             Some(DisplayEvent::Message(text.to_string()))
         }
+        "user_message_chunk" => {
+            let text = update.get("content")?.get("text")?.as_str()?;
+            if text.is_empty() {
+                return None;
+            }
+            Some(DisplayEvent::UserMessage(text.to_string()))
+        }
         "tool_call" => {
             let title = update.get("title")?.as_str()?.to_string();
             let kind = update
@@ -102,6 +111,7 @@ pub fn merge_events(events: Vec<DisplayEvent>) -> Vec<DisplayEvent> {
     for event in events {
         let should_merge = match (&event, merged.last()) {
             (DisplayEvent::Message(_), Some(DisplayEvent::Message(_))) => true,
+            (DisplayEvent::UserMessage(_), Some(DisplayEvent::UserMessage(_))) => true,
             (DisplayEvent::Thinking(_), Some(DisplayEvent::Thinking(_))) => true,
             (
                 DisplayEvent::Usage { used, size },
@@ -116,6 +126,9 @@ pub fn merge_events(events: Vec<DisplayEvent>) -> Vec<DisplayEvent> {
         if should_merge {
             match (event, merged.last_mut().unwrap()) {
                 (DisplayEvent::Message(new_text), DisplayEvent::Message(ref mut acc)) => {
+                    acc.push_str(&new_text);
+                }
+                (DisplayEvent::UserMessage(new_text), DisplayEvent::UserMessage(ref mut acc)) => {
                     acc.push_str(&new_text);
                 }
                 (DisplayEvent::Thinking(new_text), DisplayEvent::Thinking(ref mut acc)) => {
@@ -190,6 +203,7 @@ fn parse_openclaw_line(line: &str) -> Option<(DisplayEvent, bool)> {
 }
 
 /// Parse a single OpenClaw NDJSON line into a DisplayEvent
+#[allow(dead_code)]
 pub fn parse_openclaw_event(line: &str) -> Option<DisplayEvent> {
     parse_openclaw_line(line).map(|(event, _)| event)
 }
@@ -257,6 +271,16 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_user_message_chunk() {
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"abc","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Please continue"}}}}"#;
+        let event = parse_event(line).unwrap();
+        match event {
+            DisplayEvent::UserMessage(text) => assert_eq!(text, "Please continue"),
+            _ => panic!("Expected UserMessage event"),
+        }
+    }
+
+    #[test]
     fn test_parse_tool_call() {
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"abc","update":{"sessionUpdate":"tool_call","toolCallId":"call_123","title":"Read SKILL.md","kind":"read","status":"in_progress"}}}"#;
         let event = parse_event(line).unwrap();
@@ -315,7 +339,8 @@ mod tests {
 
     #[test]
     fn test_parse_non_session_update_ignored() {
-        let line = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1}}"#;
+        let line =
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1}}"#;
         assert!(parse_event(line).is_none());
     }
 
@@ -444,6 +469,20 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_consecutive_user_messages() {
+        let events = vec![
+            DisplayEvent::UserMessage("please ".to_string()),
+            DisplayEvent::UserMessage("continue".to_string()),
+        ];
+        let merged = merge_events(events);
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            DisplayEvent::UserMessage(text) => assert_eq!(text, "please continue"),
+            _ => panic!("Expected UserMessage"),
+        }
+    }
+
+    #[test]
     fn test_merge_consecutive_thoughts() {
         let events = vec![
             DisplayEvent::Thinking("Let me ".to_string()),
@@ -528,12 +567,7 @@ mod tests {
             .into_iter()
             .flatten()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .to_str()
-                    .unwrap_or("")
-                    .ends_with(".stream.ndjson")
-            })
+            .filter(|e| e.path().to_str().unwrap_or("").ends_with(".stream.ndjson"))
             .map(|e| e.path().to_str().unwrap().to_string())
             .collect();
         stream_files.sort();
@@ -543,7 +577,7 @@ mod tests {
             let events = load_recent_events(path, 50);
             eprintln!(
                 "\n=== {} === ({} events)",
-                path.split('/').last().unwrap(),
+                path.split('/').next_back().unwrap(),
                 events.len()
             );
             for (i, e) in events.iter().enumerate() {

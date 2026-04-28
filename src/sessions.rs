@@ -197,11 +197,7 @@ pub fn parse_openclaw_ref(name: &str) -> Option<OpenClawRef> {
 /// Lookup order:
 ///   1. Direct key match (session_key is the map key) — O(1)
 ///   2. Fallback: scan for matching acp.identity.acpxRecordId
-pub fn find_oc_session_id(
-    path: &Path,
-    acpx_record_id: &str,
-    session_key: &str,
-) -> Option<String> {
+pub fn find_oc_session_id(path: &Path, acpx_record_id: &str, session_key: &str) -> Option<String> {
     let data = std::fs::read_to_string(path).ok()?;
     let map: serde_json::Value = serde_json::from_str(&data).ok()?;
     let obj = map.as_object()?;
@@ -245,8 +241,7 @@ pub fn resolve_openclaw_stream(session: &Session) -> Option<PathBuf> {
         .join("sessions.json");
 
     let session_key = name;
-    let session_id =
-        find_oc_session_id(&oc_sessions_path, &session.acpx_record_id, session_key)?;
+    let session_id = find_oc_session_id(&oc_sessions_path, &session.acpx_record_id, session_key)?;
 
     let stream_path = home
         .join(".openclaw")
@@ -363,8 +358,14 @@ mod tests {
 
         let index: SessionIndex = serde_json::from_str(json).unwrap();
         assert_eq!(index.entries.len(), 1);
-        assert_eq!(index.entries[0].acpx_record_id, "301a588a-7ba2-4dc3-8abf-f78b02484fa7");
-        assert_eq!(index.entries[0].acp_session_id, "4ed50f0f-8a1d-41ec-a1ce-a59751baa957");
+        assert_eq!(
+            index.entries[0].acpx_record_id,
+            "301a588a-7ba2-4dc3-8abf-f78b02484fa7"
+        );
+        assert_eq!(
+            index.entries[0].acp_session_id,
+            "4ed50f0f-8a1d-41ec-a1ce-a59751baa957"
+        );
         assert!(!index.entries[0].closed);
     }
 
@@ -392,7 +393,10 @@ mod tests {
         }"#;
 
         let detail: SessionDetail = serde_json::from_str(json).unwrap();
-        assert_eq!(detail.acpx_record_id, "019cec90-90d1-7511-b45a-a5748cd7437c");
+        assert_eq!(
+            detail.acpx_record_id,
+            "019cec90-90d1-7511-b45a-a5748cd7437c"
+        );
         assert_eq!(detail.pid, Some(73783));
         assert_eq!(
             detail.event_log.unwrap().active_path,
