@@ -13,12 +13,12 @@ pub enum DisplayEvent {
 impl std::fmt::Display for DisplayEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DisplayEvent::Message(text) => write!(f, "💬 {}", truncate(text, 60)),
-            DisplayEvent::UserMessage(text) => write!(f, "👤 {}", truncate(text, 60)),
+            DisplayEvent::Message(text) => write!(f, "💬 {}", single_line_text(text)),
+            DisplayEvent::UserMessage(text) => write!(f, "👤 {}", single_line_text(text)),
             DisplayEvent::ToolCall { title, kind } => {
                 write!(f, "🔧 {}: {}", kind, truncate(title, 50))
             }
-            DisplayEvent::Thinking(text) => write!(f, "💭 {}", truncate(text, 60)),
+            DisplayEvent::Thinking(text) => write!(f, "💭 {}", single_line_text(text)),
             DisplayEvent::Usage { used, size } => {
                 let pct = if *size > 0 {
                     (*used as f64 / *size as f64 * 100.0) as u64
@@ -31,8 +31,12 @@ impl std::fmt::Display for DisplayEvent {
     }
 }
 
+fn single_line_text(s: &str) -> String {
+    s.replace('\n', " ")
+}
+
 fn truncate(s: &str, max: usize) -> String {
-    let s = s.replace('\n', " ");
+    let s = single_line_text(s);
     if s.chars().count() > max {
         format!("{}...", s.chars().take(max).collect::<String>())
     } else {
@@ -50,6 +54,10 @@ struct RpcMessage {
 /// Parse a single NDJSON line into a DisplayEvent
 pub fn parse_event(line: &str) -> Option<DisplayEvent> {
     let msg: RpcMessage = serde_json::from_str(line).ok()?;
+
+    if msg.method.as_deref() == Some("session/prompt") {
+        return parse_session_prompt(msg.params?);
+    }
 
     if msg.method.as_deref() != Some("session/update") {
         return None;
@@ -96,6 +104,22 @@ pub fn parse_event(line: &str) -> Option<DisplayEvent> {
             Some(DisplayEvent::Usage { used, size })
         }
         _ => None,
+    }
+}
+
+fn parse_session_prompt(params: serde_json::Value) -> Option<DisplayEvent> {
+    let prompt = params.get("prompt")?.as_array()?;
+    let text = prompt
+        .iter()
+        .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("");
+
+    if text.is_empty() {
+        None
+    } else {
+        Some(DisplayEvent::UserMessage(text))
     }
 }
 
@@ -281,6 +305,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_session_prompt_as_user_message() {
+        let line = r#"{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"abc","prompt":[{"type":"text","text":"只读代码审查，不要修改任何文件。审查当前仓库最新提交 08a0112ca（范围 HEAD^..HEAD）"}]}}"#;
+        let event = parse_event(line).unwrap();
+        match event {
+            DisplayEvent::UserMessage(text) => {
+                assert_eq!(
+                    text,
+                    "只读代码审查，不要修改任何文件。审查当前仓库最新提交 08a0112ca（范围 HEAD^..HEAD）"
+                );
+            }
+            _ => panic!("Expected UserMessage event"),
+        }
+    }
+
+    #[test]
     fn test_parse_tool_call() {
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"abc","update":{"sessionUpdate":"tool_call","toolCallId":"call_123","title":"Read SKILL.md","kind":"read","status":"in_progress"}}}"#;
         let event = parse_event(line).unwrap();
@@ -384,9 +423,49 @@ mod tests {
     }
 
     #[test]
+    fn test_single_line_text_preserves_long_content() {
+        let text = "接口‘/yzg-saas-trans-app/yzgApp/supplement/create’的使用方式： 拼接请求体、传入补充资料、确认返回结果并处理失败重试";
+        assert_eq!(single_line_text(text), text);
+    }
+
+    #[test]
+    fn test_single_line_text_normalizes_newlines() {
+        assert_eq!(single_line_text("hello\nworld\nagain"), "hello world again");
+    }
+
+    #[test]
     fn test_display_event_message() {
         let e = DisplayEvent::Message("Hello".to_string());
         assert_eq!(format!("{}", e), "💬 Hello");
+    }
+
+    #[test]
+    fn test_display_event_long_message_not_truncated() {
+        let text = "接口‘/yzg-saas-trans-app/yzgApp/supplement/create’的使用方式： 拼接请求体、传入补充资料、确认返回结果并处理失败重试";
+        let e = DisplayEvent::Message(text.to_string());
+
+        assert_eq!(format!("{}", e), format!("💬 {}", text));
+        assert!(!format!("{}", e).ends_with("..."));
+    }
+
+    #[test]
+    fn test_display_event_long_cjk_user_message_not_truncated() {
+        let text = "我会顺着现有的研究稿和相关实现痕迹往下梳理这个问题，并把后续所有需要展示的内容完整保留给终端换行和滚动处理";
+        let e = DisplayEvent::UserMessage(text.to_string());
+
+        assert_eq!(format!("{}", e), format!("👤 {}", text));
+        assert!(!format!("{}", e).ends_with("..."));
+    }
+
+    #[test]
+    fn test_display_event_thinking_normalizes_newlines_without_truncating() {
+        let text = "first line\nsecond line with enough detail to be useful";
+        let e = DisplayEvent::Thinking(text.to_string());
+
+        assert_eq!(
+            format!("{}", e),
+            "💭 first line second line with enough detail to be useful"
+        );
     }
 
     #[test]
@@ -396,6 +475,21 @@ mod tests {
             kind: "read".to_string(),
         };
         assert_eq!(format!("{}", e), "🔧 read: Read file.rs");
+    }
+
+    #[test]
+    fn test_display_event_tool_call_still_truncated() {
+        let e = DisplayEvent::ToolCall {
+            title: "Read a very long generated implementation plan for events rendering behavior"
+                .to_string(),
+            kind: "read".to_string(),
+        };
+        let rendered = format!("{}", e);
+
+        assert_eq!(
+            rendered,
+            "🔧 read: Read a very long generated implementation plan for..."
+        );
     }
 
     #[test]
@@ -425,6 +519,32 @@ mod tests {
 
         let events = load_recent_events(path.to_str().unwrap(), 10);
         assert_eq!(events.len(), 3); // message, tool_call, usage (initialize skipped)
+    }
+
+    #[test]
+    fn test_load_recent_events_includes_session_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.stream.ndjson");
+        let content = [
+            r#"{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"s1","prompt":[{"type":"text","text":"只读代码审查，不要修改任何文件。"}]}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"收到"}}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = load_recent_events(path.to_str().unwrap(), 10);
+
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            DisplayEvent::UserMessage(text) => {
+                assert_eq!(text, "只读代码审查，不要修改任何文件。")
+            }
+            _ => panic!("Expected UserMessage"),
+        }
+        match &events[1] {
+            DisplayEvent::Message(text) => assert_eq!(text, "收到"),
+            _ => panic!("Expected Message"),
+        }
     }
 
     #[test]

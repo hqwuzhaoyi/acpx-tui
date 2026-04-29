@@ -117,6 +117,11 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
+        let previous_selected_id = self
+            .selected_session()
+            .map(|session| session.acpx_record_id.clone());
+        let previous_event_scroll = self.event_scroll;
+
         self.sessions = if let Some(ref dir) = self.sessions_dir {
             sessions::load_sessions_from(dir)
         } else {
@@ -130,7 +135,14 @@ impl App {
         } else {
             Some(self.selected)
         });
+        let selected_session_unchanged = previous_selected_id.as_deref().is_some_and(|id| {
+            self.selected_session()
+                .is_some_and(|session| session.acpx_record_id == id)
+        });
         self.reload_events();
+        if selected_session_unchanged {
+            self.event_scroll = previous_event_scroll;
+        }
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
@@ -751,6 +763,8 @@ mod tests {
         let mut app = App::with_sessions_dir(dir.path());
 
         app.selected = 2;
+        app.scroll_events_down();
+        assert_eq!(app.event_scroll, 3);
 
         // Rewrite index with only 1 session
         let index = r#"{"schema":"v1","files":["session-0.json"],"entries":[{
@@ -763,6 +777,22 @@ mod tests {
         app.refresh();
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.selected, 0); // Clamped from 2 to 0
+        assert_eq!(app.event_scroll, 0);
+    }
+
+    #[test]
+    fn test_refresh_preserves_event_scroll_for_same_session() {
+        let dir = setup_test_sessions(1);
+        let mut app = App::with_sessions_dir(dir.path());
+
+        app.scroll_events_down();
+        app.scroll_events_down();
+        assert_eq!(app.event_scroll, 6);
+
+        app.refresh();
+
+        assert_eq!(app.selected_session().unwrap().acpx_record_id, "session-0");
+        assert_eq!(app.event_scroll, 6);
     }
 
     #[test]
